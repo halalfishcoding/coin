@@ -1,15 +1,25 @@
 from Crypto.Hash import SHA256
+from hashlib import sha256
 from Crypto.PublicKey import RSA
 from Crypto.Signature import PKCS1_v1_5
 import sqlite3
-import psutil
-from pythonp2p import Node
 import time
 import sys
 import json
 import ast
-# addrs = psutil.net_if_addrs()
+import socketio
+import asyncio
+from blockchain import * #blockchain.py
+import time
+import sys
+import json
+# from multiprocessing import Process
+#import webbrowser
 
+
+DIFFICULTY = 8
+
+# addrs = psutil.net_if_addrs()
 class transaction:
     def __init__(self, sender_sig, sender_pk, recipient_pk, total, id, timestamp):
         self.sender_sig = sender_sig
@@ -22,17 +32,13 @@ class transaction:
     def string(self):
         return str([self.sender_pk ,self.recipient_pk, self.total, self.id])
 
-class client(Node):
+class client():
     def __init__(self):
         f = open("env.json", "r")
         self.port = int(json.loads(f.read())["port"])
         f.close()
-        super(client, self).__init__("0.0.0.0", self.port, self.port+1)
 
-
-        self.start()
-
-        self.addfile("blockchain.db")
+        # self.addfile("blockchain.db")
 
 
         print("RUNNING ON PORT: ", self.port)
@@ -101,32 +107,46 @@ class client(Node):
         """)
         self.connection.commit()
 
-        self.initiate_p2p()
 
-    def initiate_p2p(self, p_offset=0):
-        self.connect_to("127.0.0.1", self.port+5)
+        
+    async def send_message(self, data, r=None):
+        await sio.emit('relay', {"r":r, "data":data})
+        # await 
 
-        self.send_money("spk", 400)
-        # self.net.addfile()
-    
+
     def reference(self, b):
         self.blockchain = b
+        
+    def get_balance(self, pk, connection):
+        # this often happens in a different thread 
+        c = connection.cursor()
 
-    def get_balance(self, pk):
         #get outgoing transactions
-        self.c.execute("""
+        c.execute("""
         select (ifnull(total_in,0) + ifnull(total_reward,0) - ifnull(total_out, 0)) as total from (select sum(total) as total_in from transactions where recipient_pk=?), 
 (select sum(reward) as total_reward from blockchain where miner=?),
 (select sum(total) as total_out from transactions where sender_pk=?) 
         """, (pk, pk, pk))
-        print(self.c.fetchall())
+        data = float(c.fetchall()[0][0])
+        return data
+        
+
     def on_message(self, m, r, p):
         # try:
-        data = json.loads(m)
+        print("MESSAGE:")
+        print(m)
+        try:
+            data = json.loads(m)
+        except:
+            print("err")
+            pass
+
 
         if not data['header']:
             return
-        
+
+        connection = sqlite3.connect("blockchain.db")
+
         if data['header'] == 'transaction':
             t = transaction(
                 data['data']['sender_sig'],
@@ -137,20 +157,62 @@ class client(Node):
                 data['data']['timestamp']
             )
 
+            bal = self.get_balance(data['data']['sender_pk'], connection)
+            if bal - t.total < 0:
+                print("TRANSACTION | Failed due to insufficient balance")
+                return
 
-            self.get_balance(data['data']['sender_pk'])
-            if self.verify_transaction(t):
-                self.blockchain.add_transaction(t)
+            elif not self.verify_transaction(t):
+                print("TRANSACTION | Failed due to fraudulent signature")
+                return 
+
+            self.blockchain.add_transaction(t)
+
+        elif data['header'] == 'blockchain_updates' and data['data']['block_height']:
+            print("NET | Recieved request for blockchain update")
+            c = connection.cursor()
+            c.execute("""SELECT COUNT(block_id) FROM blockchain WHERE block_id > """+ str(data['data']['block_height']))
+            tot = c.fetchall()[0][0]
+            if tot > 0:
+                c.execute("""SELECT * FROM transactions WHERE block_id > ?""", data['data']['block_height'])
+                tr_data = c.fetchall()
+                c.execute("""SELECT * FROM blockchain WHERE block_id > ?""", data['data']['block_height'])
+                bl_data = c.fetchall()
+                print(tr_data)             
+            else:
+                print("NET | Cannot deliver blockchain updates")
+                self.request_blockchain_updates(c)   
+
+        elif data['header'] == 'mined':
+            # try:
+            print("NET | Block has been mined")
+            d = data['data']
+            transactions = [transaction(t[0], t[1], t[2], t[3], t[4], t[5]) for t in d['transactions']]
+            b = block(
+                d['index'],
+                transactions,
+                d['timestamp'],
+                d["previous_hash"],
+                d['nonce'],
+                d['miner']
+            )
+
+            self.blockchain.addblock(b)
+            
+            
+
+
+
 
         # except:
         #     return
-    def request_blockchain_updates(self):
+    async def request_blockchain_updates(self):
         #ask the network for the current block height and a hash of the current blockchain database
-        self.c.execute("SELECT MAX(block_id) FROM blockchain")
+        print("CLIENT | Requesting blockchain updates")
+        self.c.execute("SELECT ifnull(h, 0) from (SELECT MAX(block_id) as h FROM blockchain)")
         f = self.c.fetchall()
-        print(f)
-        self.send_message(
-            json.dump({
+        await self.send_message(
+            json.dumps({
                 "header":"blockchain_updates",
                 "data": {
                     "block_height":int(f[0][0])
@@ -173,7 +235,7 @@ class client(Node):
         #respond with data containing new block height'
 
 
-    def send_money(self, recipient_pk, total):
+    async def send_money(self, recipient_pk, total):
         t = transaction(
             None,
             self.pk.export_key().decode(),
@@ -196,7 +258,7 @@ class client(Node):
             "timestamp": t.timestamp
         }})
 
-        self.send_message(data)
+        await self.send_message(data)
 
     def calculate_transaction_number(self, recipient_pk):
         s = self.pk.export_key().decode()
@@ -248,4 +310,34 @@ class client(Node):
         return res
 
     
+    # def init_nodejs_conn(self):
+        
 
+c = client()
+b = blockchain(c)
+
+sio = socketio.AsyncClient()
+
+@sio.event
+async def connect():
+    print('CLIENT | Connection to Node.JS established')
+
+# await sio.emit('my response', {'response': 'my response'})
+
+@sio.event
+async def disconnect():
+    print('CLIENT | Disconnected from Node.JS')
+
+@sio.on('get_blockchain_updates')
+async def get_blockchain_updates(data):
+    await c.request_blockchain_updates()
+    pass
+
+async def main():
+    await sio.connect('http://localhost:4999')
+    await sio.wait()
+
+# async def f():
+    
+
+asyncio.run(main())

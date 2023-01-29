@@ -2,6 +2,7 @@ import os
 import shutil
 di = os.getcwd()
 import sys
+from distutils.dir_util import copy_tree
 
 
 # os.system('taskkill /F /IM "wt.exe"')
@@ -29,21 +30,24 @@ os.mkdir("./testenv/2")
 files = [
     "src/blockchain.py",
     "src/client.py",
-    "src/main.py"
+    # "blockchain.db"
 ]
 offset = 0
 for x in ["testenv/1", "testenv/2"]:
     os.mkdir(x+"/keyfiles")
     for f in files:
         shutil.copy(f, x)
-    
-    f = open(x+"/env.json", "w")
-    f.write("""{
-    "port": """+str(44444+offset)+"""
-}""")
+
+    copy_tree("src/p2p", x)
+    if "2" in x:
+        shutil.copy("blockchain.db", x)
+    f = open(x+"/.env", "w")
+    f.write("""PORT="""+str(44444+offset))
+
     offset += 5
     print(di + x)
-    os.system('start /D "' + di + "\\" + x + '" python main.py')
+    os.system('start /D "' + di + "\\" + x + '" python client.py')
+    os.system('start /D "' + di + "\\" + x + '" node index')
     print(x)
 
 

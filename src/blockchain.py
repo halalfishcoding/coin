@@ -1,10 +1,22 @@
 from hashlib import sha256
 import json
-import time
-from client import transaction
-
+#
 blocksize = 20 # total transactions per block
 
+class transaction:
+    def __init__(self, sender_sig, sender_pk, recipient_pk, total, id, timestamp):
+        self.sender_sig = sender_sig
+        self.sender_pk = sender_pk
+        self.recipient_pk = recipient_pk
+        self.total = total
+        self.id = id
+        self.timestamp = timestamp
+        
+    def string(self):
+        return str([self.sender_sig, self.sender_pk ,self.recipient_pk, self.total, self.id, self.timestamp])
+
+    def li(self):
+        return [self.sender_sig, self.sender_pk ,self.recipient_pk, self.total, self.id, self.timestamp]
 
 class block:
     def __init__(self, index, transactions, timestamp, previous_hash, miner="", nonce=0):
@@ -15,7 +27,8 @@ class block:
         self.nonce = nonce  # bro got the nonce
         self.miner = miner
         self.gen_hash()
-        
+        self.reward = 0
+
     def gen_hash(self):
         tr = []
         for x in self.transactions:
@@ -24,6 +37,16 @@ class block:
         block_string = json.dumps([self.index, tr, self.timestamp, self.previous_hash, self.miner, self.nonce])
         
         self.hash = sha256(block_string.encode()).hexdigest()
+
+    def package(self):
+        return {
+            "index": self.index,
+            "transactions": [t.li() for t in self.transactions],
+            "timestamp": self.timestamp,
+            "previous_hash":self.previous_hash,
+            "nonce":self.nonce,
+            "miner":self.miner
+        }
 
     def insert_transaction(self, dat):
         self.transactions.append(transaction(
@@ -39,7 +62,6 @@ class blockchain:
     def __init__(self, client):
         self.client = client
         self.client.reference(self)
-        print("Class reference created")
         self.unconfirmed_transactions = []
         self.create_genesis_block()
         
@@ -102,11 +124,9 @@ class blockchain:
     def addblock(self, b):
         b.gen_hash()
         if b.index != 0 and self.last_block().hash != b.previous_hash:
-            print("j")
             return False
 
         if b.index != 0 and not self.is_valid_proof(b):
-            print("i")
             return False
         
 

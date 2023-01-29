@@ -3,3 +3,7 @@ testenv
 keyfiles/*
 blockchain.db
 blockchain.db-journal
+static
+src/p2p/node_modules
+src/__pycache__
+src/blockchain.db
