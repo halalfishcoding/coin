@@ -8,3 +8,4 @@ src/p2p/node_modules
 src/__pycache__
 src/blockchain.db
 src/keyfiles
+src/node_modules

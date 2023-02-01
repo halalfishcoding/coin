@@ -15,6 +15,9 @@ import sys
 import json
 # from multiprocessing import Process
 #import webbrowser
+f = open("env.json", "r")
+port = int(json.loads(f.read())["port"])
+f.close()
 
 
 DIFFICULTY = 8
@@ -34,14 +37,12 @@ class transaction:
 
 class client():
     def __init__(self):
-        f = open("env.json", "r")
-        self.port = int(json.loads(f.read())["port"])
-        f.close()
+        
 
         # self.addfile("blockchain.db")
 
 
-        print("RUNNING ON PORT: ", self.port)
+        # print("RUNNING ON PORT: ", self.port)
         try: # load client's key files (if they exist)
             #load public key
             f = open("keyfiles/pk.pem", "r") 
@@ -131,10 +132,8 @@ class client():
         return data
         
 
-    def on_message(self, m, r, p):
+    async def on_message(self, m):
         # try:
-        print("MESSAGE:")
-        print(m)
         try:
             data = json.loads(m)
         except:
@@ -146,7 +145,7 @@ class client():
             return
 
         connection = sqlite3.connect("blockchain.db")
-
+        
         if data['header'] == 'transaction':
             t = transaction(
                 data['data']['sender_sig'],
@@ -168,20 +167,39 @@ class client():
 
             self.blockchain.add_transaction(t)
 
-        elif data['header'] == 'blockchain_updates' and data['data']['block_height']:
+        elif 'blockchain_updates' in data['header'] and data['data']['block_height'] >= 0:
             print("NET | Recieved request for blockchain update")
             c = connection.cursor()
             c.execute("""SELECT COUNT(block_id) FROM blockchain WHERE block_id > """+ str(data['data']['block_height']))
             tot = c.fetchall()[0][0]
             if tot > 0:
-                c.execute("""SELECT * FROM transactions WHERE block_id > ?""", data['data']['block_height'])
+                c.execute("""SELECT * FROM transactions WHERE block_id > ?""", str(data['data']['block_height']))
                 tr_data = c.fetchall()
-                c.execute("""SELECT * FROM blockchain WHERE block_id > ?""", data['data']['block_height'])
+                c.execute("""SELECT * FROM blockchain WHERE block_id > ?""", str(data['data']['block_height']))
                 bl_data = c.fetchall()
-                print(tr_data)             
+                final = {
+                    "header": "blockchain_update_ret",
+                    "tr_data": tr_data,
+                    "bl_data": bl_data
+                }   
+                print(data['sender'])
+                await self.send_message(json.dumps(final), r=data['sender'])
+            
             else:
-                print("NET | Cannot deliver blockchain updates")
-                self.request_blockchain_updates(c)   
+                print("NET | Cannot deliver blockchain updates, block height is",tot,"higher than database")
+                
+                # self.request_blockchain_updates(c)   
+
+        elif 'blockchain_update_ret' in data['header'] and data['bl_data'] and data['tr_data']:
+            c = connection.cursor()
+            for x in data['bl_data']:
+                x = [str(n) for n in x]
+                c.execute("""INSERT INTO blockchain (block_id, hash, previous_hash, timestamp, nonce, miner, reward) VALUES (?, ?, ?, ?, ?, ?, ?)""", x)
+                connection.commit()
+            for x in data['tr_data']:
+                x = [str(n) for n in x]
+                c.execute("""INSERT INTO transactions (sender_pk, recipient_pk, sender_sig, total, transaction_id, timestamp, block_id) VALUES (?, ?, ?, ?, ?, ?, ?)""", x)                
+                connection.commit()
 
         elif data['header'] == 'mined':
             # try:
@@ -198,11 +216,6 @@ class client():
             )
 
             self.blockchain.addblock(b)
-            
-            
-
-
-
 
         # except:
         #     return
@@ -309,12 +322,21 @@ class client():
         res = verifier.verify(hashed_data, bytes.fromhex(t.sender_sig))
         return res
 
-    
+    async def on_fetch(self, m): 
+        if m == "bal":
+            bal = self.get_balance(self.pk.export_key(), self.connection)
+            print(bal)
+            await self.return_fetch(bal) 
+
+
+    async def return_fetch(self, m):
+        await sio.emit('fetch', m)
     # def init_nodejs_conn(self):
         
-
+print(" -- Initiating BLOCKCHAIN -- ")
 c = client()
 b = blockchain(c)
+
 
 sio = socketio.AsyncClient()
 
@@ -323,6 +345,17 @@ async def connect():
     print('CLIENT | Connection to Node.JS established')
 
 # await sio.emit('my response', {'response': 'my response'})
+async def message_handler(msg):
+    print('INTERPYTHON | Received message: ', msg)
+    await c.on_message(msg)
+
+sio.on('message', message_handler)
+
+async def fetch_handler(msg):
+    print(msg)
+    await c.on_fetch(msg)
+
+sio.on('fetch', fetch_handler)
 
 @sio.event
 async def disconnect():
@@ -331,10 +364,10 @@ async def disconnect():
 @sio.on('get_blockchain_updates')
 async def get_blockchain_updates(data):
     await c.request_blockchain_updates()
-    pass
 
 async def main():
-    await sio.connect('http://localhost:4999')
+    print("NODE.JS | Connecting to interpython at port " + str(port))
+    await sio.connect('http://localhost:'+str(port))
     await sio.wait()
 
 # async def f():

@@ -1,6 +1,6 @@
 from hashlib import sha256
 import json
-#
+import time
 blocksize = 20 # total transactions per block
 
 class transaction:
